@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -424,5 +425,40 @@ func Benchmark_PushStream(b *testing.B) {
 		_, err := s.Push(ctx, e, rec, 0)
 		require.NoError(b, err)
 		recordPool.PutRecord(rec)
+	}
+}
+
+func TestPushLargeEntry(t *testing.T) {
+	cfg := defaultIngesterTestConfig(t)
+	cfg.ChunkEncoding = "none"
+	cfg.MaxChunkAge = 10 * time.Second
+	limits, err := validation.NewOverrides(defaultLimitsTestConfig(), nil)
+	require.NoError(t, err)
+	limiter := NewLimiter(limits, NilMetrics, &ringCountMock{count: 1}, 1)
+
+	s := newStream(
+		&cfg,
+		limiter,
+		"fake",
+		model.Fingerprint(0),
+		labels.Labels{
+			{Name: "foo", Value: "bar"},
+		},
+		true,
+		NilMetrics,
+	)
+
+	// large log entry
+	entries := []logproto.Entry{
+		{Timestamp: time.Unix(1, 0), Line: strings.Repeat("a", cfg.TargetChunkSize*10)},
+	}
+	_, err = s.Push(context.Background(), entries, recordPool.GetRecord(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for idx, chk := range s.chunks {
+		if realSize := chk.chunk.CompressedSize(); realSize > cfg.TargetChunkSize {
+			t.Error(idx, realSize)
+		}
 	}
 }
